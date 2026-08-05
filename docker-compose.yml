@@ -1,0 +1,55 @@
+# eCareAuth Gateway (S2) — joins the S1 Keycloak network so it can reach Keycloak for JWKS.
+#
+# The S1 stack (keycloak-config/docker-compose.yml) creates a bridge network named `ecare`,
+# which Docker Compose prefixes with its project (directory) name -> `keycloak-config_ecare`.
+# We attach to it as an EXTERNAL network below. If your S1 project dir differs, find the real
+# name with `docker network ls` and update `name:` accordingly.
+#
+# Bring up S1 first:   cd ../ecare-wiki/keycloak-config && docker compose up -d
+# Then this stack:     docker compose up -d --build
+
+services:
+  # ── The gateway (run >=2 replicas behind an LB in real HA; one here for UAT) ───────────────
+  ecareauth-gateway:
+    build: .
+    image: ecareapps/ecareauth-gateway:0.2.0
+    container_name: ecareauth-gateway
+    environment:
+      # Reach Keycloak by its S1 service name; iss stays the public issuer (validated).
+      ECARE_JWKS_URI: http://ecare-keycloak:8080/realms/ecare-tenant/protocol/openid-connect/certs
+      # Point routes at the UAT stubs (override to real services in S5).
+      ECARE_GATEWAY_ROUTES_ECAREHEALTH_URI: http://ecarehealth-api-stub:8080
+      ECARE_GATEWAY_ROUTES_ECAREADMIN_URI: http://ecareadmin-stub:8080
+    ports:
+      - "8081:8081"
+    depends_on:
+      - ecarehealth-api-stub
+      - ecareadmin-stub
+    networks:
+      - ecare
+    restart: unless-stopped
+
+  # ── eCareHealth API stub (real build is S5) — echoes request, proves routing + token relay ──
+  ecarehealth-api-stub:
+    image: mendhak/http-https-echo:31
+    container_name: ecarehealth-api-stub
+    environment:
+      HTTP_PORT: "8080"
+    networks:
+      - ecare
+    restart: unless-stopped
+
+  # ── eCareAdmin stub (real build is S3) — health/echo endpoint ───────────────────────────────
+  ecareadmin-stub:
+    image: mendhak/http-https-echo:31
+    container_name: ecareadmin-stub
+    environment:
+      HTTP_PORT: "8080"
+    networks:
+      - ecare
+    restart: unless-stopped
+
+networks:
+  ecare:
+    external: true
+    name: keycloak-config_ecare   # <- S1 network (project dir = keycloak-config). Adjust if different.

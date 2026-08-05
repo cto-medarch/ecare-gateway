@@ -1,0 +1,86 @@
+server:
+  port: 8081
+  forward-headers-strategy: framework   # honour X-Forwarded-* from the LB (client IP, proto)
+
+spring:
+  application:
+    name: ecareauth-gateway
+  cloud:
+    gateway:
+      # Do NOT auto-add forwarded/xforwarded twice; we sit behind an LB that already sets them.
+      httpclient:
+        connect-timeout: 2000
+        response-timeout: 10s
+      # Global default filters run on every route. Security headers/CORS are separate global beans.
+      default-filters:
+        # Never leak internal infra hop info downstream.
+        - RemoveResponseHeader=Server
+
+      routes:
+        # ── api.ecarehealth.com -> eCareHealth API (require aud=ecarehealth) ──────────────────
+        - id: ecarehealth-api
+          uri: ${ecare.gateway.routes.ecarehealth-uri:http://ecarehealth-api:8080}
+          predicates:
+            - Host=api.ecarehealth.com
+          filters:
+            # Section B.3: methods this product needs; everything else -> 405.
+            - RestrictMethods=GET,POST,PUT,PATCH,DELETE
+            # Central per-route audience enforcement (contract §1).
+            - RequireAudience=ecarehealth
+            # Section B.2: per-IP + per-route throttle.
+            - InMemoryRateLimit=20,40
+          # NOTE: the incoming Authorization header is forwarded UNCHANGED by default (token relay).
+          #       Products read ONLY this forwarded token — the phantom seam (ADR-3).
+
+        # ── admin-api.ecareapps.com -> eCareAdmin stub (require aud=ecareadmin) ───────────────
+        # Real eCareAdmin build is S3; the stub (health/echo) makes routing + auth testable now.
+        - id: ecareadmin-stub
+          uri: ${ecare.gateway.routes.ecareadmin-uri:http://ecareadmin-stub:8080}
+          predicates:
+            - Host=admin-api.ecareapps.com
+          filters:
+            - RestrictMethods=GET,POST
+            - RequireAudience=ecareadmin
+            # Auth/token-adjacent surface: tighter bucket.
+            - InMemoryRateLimit=10,20
+
+# ── eCareAuth-specific config ────────────────────────────────────────────────────────────────
+ecare:
+  gateway:
+    jwt:
+      # iss we VALIDATE (string in the token).
+      issuer: https://auth.ecareapps.com/realms/ecare-tenant
+      # Where we FETCH+cache JWKS. Decoupled from issuer so the container reaches Keycloak by
+      # service name. Override per environment:
+      #   local host run:  http://localhost:8080/realms/ecare-tenant/protocol/openid-connect/certs
+      #   in docker (S1):  http://ecare-keycloak:8080/realms/ecare-tenant/protocol/openid-connect/certs
+      jwk-set-uri: ${ECARE_JWKS_URI:http://ecare-keycloak:8080/realms/ecare-tenant/protocol/openid-connect/certs}
+    phantom:
+      enabled: false        # ADR-3: phantom deferred; enabling is a gateway-only change.
+    ratelimit:
+      replenish-rate: 20
+      burst-capacity: 40
+
+# ── Actuator: health/readiness for the LB (>=2 replicas) ─────────────────────────────────────
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never   # no internal detail leakage
+
+# ── Logging: structured, and NO PHI / NO tokens (VAPT) ───────────────────────────────────────
+logging:
+  level:
+    root: INFO
+    # Keep these at INFO+; DEBUG on the security/webclient packages would print Authorization
+    # headers and token contents. Do NOT raise them in any deployed environment.
+    org.springframework.security: INFO
+    org.springframework.web.reactive.function.client: INFO
+    org.springframework.cloud.gateway: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
