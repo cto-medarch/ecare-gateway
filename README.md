@@ -1,4 +1,4 @@
-# 04 — Spring Cloud Gateway (ecareauth-gateway)
+# 04 — Spring Cloud Gateway (ecare-gateway)
 
 Front door. Validates JWT locally, routes to products over HTTP. Phantom-ready seam (ADR-3).
 Separate repo. Run **≥2 replicas** behind LB (HA). One shared gateway, not per-product.
@@ -29,7 +29,8 @@ admin-api.ecareapps.com   -> eCareAdmin stub    (require aud=ecareadmin)
 ```
 - Issuer: `https://auth.ecareapps.com/realms/ecare-tenant`
 - JWKS URI: `https://auth.ecareapps.com/realms/ecare-tenant/protocol/openid-connect/certs`
-- eCareAdmin real build is S3. S2 uses a stub (health/echo) so routing + auth are testable now.
+- eCareAdmin is now built (S3, `cto-medarch/ecare-admin-service`) — the stub is no longer needed for
+  the `admin-api` route.
 
 ## Audience enforcement
 Gateway rejects at edge if `aud` does not match the route's product.
@@ -47,17 +48,25 @@ Gateway rejects at edge if `aud` does not match the route's product.
    (4–8 as one global response-header filter.)
 
 ## Tasks
-- [ ] Resource-server config: JWKS URI + issuer above.
-- [ ] Two host-based routes (config-as-code) with per-route aud check.
-- [ ] Token relay filter (forward as-is).
-- [ ] Global filters: security headers, CORS, method restriction, phantom seam.
-- [ ] Rate-limit + structured logging (assert no PHI/tokens in logs).
-- [ ] Degraded-mode documented (serve valid tokens during KC blip; block new logins).
-- [ ] Dockerfile + compose entry (join S1 network to reach Keycloak).
+
+> Updated 2026-08-06, verified against the code. Implementation is essentially complete; **test
+> coverage is not** — `SectionBHardeningTest` is the only test class in the repo.
+
+- [x] Resource-server config: JWKS URI + issuer above. — `SecurityConfig`, `GatewayJwtProperties`
+- [x] Two host-based routes (config-as-code) with per-route aud check. — `application.yaml`, `RequireAudienceGatewayFilterFactory`
+- [x] Token relay filter (forward as-is). — Spring Cloud Gateway default; nothing strips `Authorization`
+- [x] Global filters: security headers, CORS, method restriction, phantom seam. — `SecurityHeadersGlobalFilter`, `CorsConfig`, `RestrictMethodsGatewayFilterFactory`, `PhantomIntrospectionFilter`
+- [ ] Rate-limit + structured logging (assert no PHI/tokens in logs). — limiter and logging config exist (`application.yaml` §Logging); **the assertion test does not**
+- [x] Degraded-mode documented (serve valid tokens during KC blip; block new logins). — javadoc at `SecurityConfig:60` and `GatewayJwtProperties:13`
+- [x] Dockerfile + compose entry (join S1 network to reach Keycloak). — `Dockerfile`, `docker-compose.yml`
 
 ## Acceptance criteria
-- [ ] Valid JWT (aud=ecarehealth) routes to eCareHealth; wrong/expired rejected at edge.
-- [ ] admin-api route reachable via stub with aud=ecareadmin.
-- [ ] KC outage: already-issued tokens still validated (JWKS cached); test simulates JWKS down.
-- [ ] All 8 Section B headers/policies present (SectionBHardeningTest).
-- [ ] No token or PHI in gateway logs (test).
+
+> Only #4 is met. The other four describe tests that have not been written — the behaviour is
+> implemented, but nothing proves it stays implemented. This is the gap to close before the S6 gate.
+
+- [ ] Valid JWT (aud=ecarehealth) routes to eCareHealth; wrong/expired rejected at edge. — *no test*
+- [ ] admin-api route reachable via stub with aud=ecareadmin. — *no test*
+- [ ] KC outage: already-issued tokens still validated (JWKS cached); test simulates JWKS down. — *no test*
+- [x] All 8 Section B headers/policies present (`SectionBHardeningTest`, 8 test methods).
+- [ ] No token or PHI in gateway logs (test). — *no test*
